@@ -1,8 +1,10 @@
 package modifier
 
 import (
+	"errors"
 	"fmt"
 	"log"
+	"reflect"
 
 	tea "github.com/charmbracelet/bubbletea"
 	square "github.com/reverendheat/gccr-tui/pkg/client"
@@ -23,8 +25,7 @@ type Model struct {
 	windowSize    tea.WindowSizeMsg
 	activeMl      square.ModifierList
 	activeMlIndex int
-	activeMlMap   map[int]square.ModifierList
-	selections    map[string]struct{}
+	selections    map[string]interface{}
 	Modifiers     []square.ModifierList
 }
 
@@ -45,13 +46,47 @@ func New(item square.CatalogItem, ws tea.WindowSizeMsg) Model {
 		Modifiers:     mods,
 		activeMl:      activeMl,
 		activeMlIndex: 0,
-		activeMlMap:   activeMlMap,
-		selections:    make(map[string]struct{}),
+		selections:    initSelections(mods),
 	}
 }
 
 func (m Model) Init() tea.Cmd {
 	return nil
+}
+
+func contains(l []int, n int) bool {
+	for _, v := range l {
+		if v == n {
+			return true
+		}
+	}
+	return false
+}
+
+func initSelections(mods []square.ModifierList) map[string]interface{} {
+	selections := make(map[string]interface{})
+	for _, ml := range mods {
+		if ml.ModifierListData.SelectionType == "SINGLE" {
+			selections[ml.ID] = nil
+		} else {
+			selections[ml.ID] = []int{}
+		}
+	}
+	return selections
+}
+
+func findIndexByValue(s []int, val int) (int, error) {
+	for i, v := range s {
+		if val == v {
+			return i, nil
+		}
+	}
+	return val, errors.New("Value you not found in slice")
+}
+
+func removeAtIndex(s []int, idx int) []int {
+	s[idx] = s[0]
+	return s[1:]
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -76,6 +111,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.activeMl = m.Modifiers[m.activeMlIndex]
 				m.cursor = 0
 			}
+		case "enter":
+			//IT HAS TO BE INDIVIDUAL MODIFIER NAME ON THE SELECTION NOT THE ID FOR THE WHOLE LIST!
+			if val, ok := m.selections[m.activeMl.ID]; ok {
+				//Modifier list exists...
+				if m.activeMl.ModifierListData.SelectionType == "SINGLE" {
+					// single..
+					if val == m.cursor {
+						// empty it
+						m.selections[m.activeMl.ID] = nil
+					} else {
+						// add it
+						m.selections[m.activeMl.ID] = m.cursor
+					}
+				} else if m.activeMl.ModifierListData.SelectionType == "MULTIPLE" {
+					tmpSlice := reflect.ValueOf(m.selections[m.activeMl.ID]).Interface().([]int)
+					if contains(tmpSlice, m.cursor) {
+						idx, err := findIndexByValue(tmpSlice, m.cursor)
+						if err != nil {
+							log.Fatalf("%d was not found in activeMl list", m.cursor)
+						}
+						m.selections[m.activeMl.ID] = removeAtIndex(tmpSlice, idx)
+					} else {
+						m.selections[m.activeMl.ID] = append(tmpSlice, m.cursor)
+					}
+				}
+			} else {
+				// Modifier list key does not exist
+				if m.activeMl.ModifierListData.SelectionType == "SINGLE" {
+					m.selections[m.activeMl.ID] = m.cursor
+				}
+				if m.activeMl.ModifierListData.SelectionType == "MULTIPLE" {
+					tmpSlice := []int{m.cursor}
+					m.selections[m.activeMl.ID] = tmpSlice
+				}
+			}
 		case "backspace":
 			cmd = backSpaceCmd()
 		}
@@ -92,13 +162,23 @@ func (m Model) View() string {
 	return s
 }
 
-func (m Model) RenderModifiers(ml square.ModifierListData) string {
+func (m Model) RenderModifiers(ml square.ModifierListData, id string) string {
 	var s string
 	for i, mod := range ml.Modifiers {
 		cursor := " "
 		selected := " "
 		if m.cursor == i && ml.Name == m.activeMl.ModifierListData.Name {
 			cursor = ">"
+		}
+		if ml.SelectionType == "SINGLE" {
+			if m.selections[id] == i {
+				selected = "X"
+			}
+		} else if ml.SelectionType == "MULTIPLE" {
+			tmpSlice := reflect.ValueOf(m.selections[id]).Interface().([]int)
+			if contains(tmpSlice, i) {
+				selected = "X"
+			}
 		}
 		s += fmt.Sprintf("%s [%s] %s\n", cursor, selected, mod.ModifierData.Name)
 	}
@@ -108,8 +188,13 @@ func (m Model) RenderModifiers(ml square.ModifierListData) string {
 func (m Model) RenderModifierLists() string {
 	s := "--- Mods ---\n\n"
 	for _, ml := range m.Modifiers {
-		s += fmt.Sprintf("-- %s --\n", ml.ModifierListData.Name)
-		s += m.RenderModifiers(ml.ModifierListData)
+		s += fmt.Sprintf("-- %s -- ", ml.ModifierListData.Name)
+		if ml.ModifierListData.SelectionType == "SINGLE" {
+			s += "Choose one\n"
+		} else {
+			s += "Choose many\n"
+		}
+		s += m.RenderModifiers(ml.ModifierListData, ml.ID)
 	}
 	return s
 }
